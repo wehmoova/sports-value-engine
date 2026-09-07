@@ -417,12 +417,25 @@ async def _run_analysis(run_id: str) -> None:
         errors.append({"provider": "settlement", "message": str(exc)[:500]})
         await _set_step(run_id, "SETTLEMENT", "FAILED", error=str(exc))
 
+    predictions_created = recommendations_created = 0
+    if job_type == "daily_analysis":
+        from app.research.production import infer
+
+        try:
+            async with SessionLocal() as session:
+                predictions_created, recommendations_created = await infer(session, run_id)
+                await session.commit()
+        except Exception as exc:
+            predictions_created = recommendations_created = 0
+            errors.append({"provider": "model_inference", "message": type(exc).__name__})
     for step in ("FEATURE_ENGINEERING", "MODEL_VALIDATION", "VALUE_ELIGIBILITY"):
         await _set_step(
             run_id,
             step,
-            "SKIPPED",
-            error="No validated PRODUCTION model registry entry; no prediction generated.",
+            "COMPLETED" if predictions_created else "SKIPPED",
+            error=None
+            if predictions_created
+            else "NO_PRODUCTION_MODEL or insufficient eligible data",
         )
     await _set_step(run_id, "PERSIST_OUTPUT", "COMPLETED", records=sum(totals.values()))
 
@@ -446,8 +459,8 @@ async def _run_analysis(run_id: str) -> None:
         run.finished_at = datetime.now(UTC)
         run.events_processed = totals["events"]
         run.records_processed = sum(totals.values())
-        run.predictions_created = 0
-        run.value_picks_created = 0
+        run.predictions_created = predictions_created
+        run.value_picks_created = recommendations_created
         run.errors = errors
         if configured_count == 0:
             run.status = "FAILED"
@@ -465,7 +478,8 @@ async def _run_analysis(run_id: str) -> None:
             run.status = "COMPLETED"
             run.log_summary = (
                 f"Real-data sync persisted {totals['events']} events, {totals['odds']} odds "
-                f"and {totals['statistics']} statistic snapshots. No recommendation was "
-                "created because no calibrated production model is registered."
+                f"and {totals['statistics']} statistic snapshots. "
+                f"Production predictions: {predictions_created}; "
+                f"recommendations: {recommendations_created}."
             )
         await session.commit()

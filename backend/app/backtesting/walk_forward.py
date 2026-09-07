@@ -37,7 +37,14 @@ def walk_forward_splits(
     splits: list[WalkForwardSplit] = []
     train_end = min_train_size
     while train_end < len(timestamps):
+        # Equal kickoff timestamps must never straddle a train/test boundary.
+        while train_end < len(timestamps) and timestamps[train_end] == timestamps[train_end - 1]:
+            train_end += 1
+        if train_end == len(timestamps):
+            break
         test_end = min(train_end + test_size, len(timestamps))
+        while test_end < len(timestamps) and timestamps[test_end] == timestamps[test_end - 1]:
+            test_end += 1
         splits.append(
             WalkForwardSplit(
                 train_indices=tuple(range(train_end)),

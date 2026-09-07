@@ -50,6 +50,14 @@ class Settings(BaseSettings):
     worker_schedules_enabled: bool = True
     odds_sync_interval_minutes: int = Field(default=30, ge=5, le=1440)
     deployment_version: str = "development"
+    min_football_history_matches: int = Field(default=200, ge=30)
+    min_tennis_history_matches: int = Field(default=300, ge=30)
+    min_participant_history_matches: int = Field(default=10, ge=3)
+    min_validation_samples: int = Field(default=200, ge=50)
+    max_validation_brier: float = Field(default=0.24, gt=0, lt=1)
+    max_validation_log_loss: float = Field(default=0.69, gt=0)
+    max_validation_ece: float = Field(default=0.05, gt=0, lt=1)
+    backfill_request_delay_seconds: float = Field(default=1.0, ge=0.1)
 
     @model_validator(mode="after")
     def validate_data_mode(self) -> "Settings":

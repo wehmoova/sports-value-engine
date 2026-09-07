@@ -50,6 +50,14 @@ async def sync_sportmonks_data(
             session, normalized=normalized, provider="sportmonks", run_id=run_id
         )
         fixtures.append((event, row))
+        if normalized.status == "FINAL":
+            from app.research.backfill import persist_result
+
+            try:
+                async with session.begin_nested():
+                    await persist_result(session, row, "sportmonks", run_id)
+            except (ValueError, TypeError, KeyError):
+                invalid += 1
     await session.commit()
     # Never roll back valid fixtures because premium access is denied.
     statistics = 0

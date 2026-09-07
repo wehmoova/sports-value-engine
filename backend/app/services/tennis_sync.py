@@ -165,6 +165,14 @@ async def sync_tennis_events(
         )
         persisted.append((event, raw, normalized))
         normalized_events.append(normalized)
+        if normalized.status == "FINAL":
+            from app.research.backfill import persist_result
+
+            try:
+                async with session.begin_nested():
+                    await persist_result(session, raw, "api_tennis", run_id)
+            except (ValueError, TypeError, KeyError):
+                pass  # Invalid result is not added to the training archive.
     await session.flush()
     return persisted, normalized_events
 

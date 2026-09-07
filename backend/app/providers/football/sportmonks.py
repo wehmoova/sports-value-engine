@@ -10,6 +10,7 @@ import httpx
 from app.core.config import Settings
 from app.providers.base import FootballProvider
 from app.providers.odds.the_odds_api import ProviderError, payload_hash
+from app.providers.retry import retry_delay
 from app.scripts.sportmonks_smoke import redact
 
 
@@ -41,6 +42,11 @@ class SportmonksFootballProvider(FootballProvider):
                         f"{self._base_url}/{path.lstrip('/')}", params=request_params
                     )
                 self.last_status_code = response.status_code
+                if response.status_code == 429:
+                    delay = retry_delay(response.headers.get("Retry-After"), attempt)
+                    if delay > 60:
+                        raise PermissionError("Sportmonks rate limit: defer and resume later")
+                    await asyncio.sleep(delay)
                 self.last_latency_ms = round((perf_counter() - started) * 1000, 1)
                 try:
                     diagnostic_body = response.json()
@@ -174,7 +180,7 @@ class SportmonksFootballProvider(FootballProvider):
         return records[0] if records else {}
 
     async def get_fixture_statistics(self, event_external_id: str) -> list[dict[str, Any]]:
-        fixture = await self._fixture(event_external_id, "statistics.type;xGFixture")
+        fixture = await self._fixture(event_external_id, "statistics.type")
         statistics = fixture.get("statistics", [])
         return [item for item in statistics if isinstance(item, dict)]
 

@@ -1,6 +1,8 @@
 """Persistent scheduler and durable manual-job consumer. No web process required."""
 
 import asyncio
+import signal
+from contextlib import suppress
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -11,7 +13,7 @@ from app.models import AnalysisRun
 from app.models.system import WorkerHeartbeat
 from app.scheduler.jobs import build_scheduler
 from app.services.analysis import run_analysis
-from app.services.job_lock import job_lock
+from app.services.job_lock import job_lock, waiting_job_lock
 
 
 async def heartbeat() -> None:
@@ -27,9 +29,7 @@ async def heartbeat() -> None:
 
 
 async def serve() -> None:
-    async with job_lock("worker-leader") as acquired:
-        if not acquired:
-            raise RuntimeError("A worker leader is already active")
+    async with waiting_job_lock("worker-leader"):
         # Only recover RUNNING jobs after proving no execution owns the DB lock.
         async with job_lock("analysis-execute") as idle:
             if idle:
@@ -70,8 +70,16 @@ async def serve() -> None:
 if __name__ == "__main__":
 
     async def main() -> None:
+        task = asyncio.create_task(serve())
+        loop = asyncio.get_running_loop()
+        # Railway sends SIGTERM on replacement. Cancel gracefully so finally blocks
+        # release the leader session instead of waiting for the platform kill timeout.
+        with suppress(NotImplementedError):
+            loop.add_signal_handler(signal.SIGTERM, task.cancel)
         try:
-            await serve()
+            await task
+        except asyncio.CancelledError:
+            pass
         finally:
             await engine.dispose()
 

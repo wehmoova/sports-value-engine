@@ -6,6 +6,11 @@ Production-oriented full-stack foundation for transparent pre-match sports analy
 
 ## Quick start
 
+Historical research and worker rolling-deployment changes are documented in
+[docs/RESEARCH.md](docs/RESEARCH.md). Migration `0004_research` adds durable checkpoints
+and immutable research artifacts. No model is promoted automatically. Backfilled
+data without proven historical availability cannot silently qualify a backtest.
+
 1. Optionally copy `.env.example` to `.env` and add `THE_ODDS_API_KEY`.
 2. Run `docker compose up --build` (it also works without `.env`).
 3. Open [http://localhost:3001](http://localhost:3001), [http://localhost:8000/docs](http://localhost:8000/docs), or [http://localhost:8000/health](http://localhost:8000/health).

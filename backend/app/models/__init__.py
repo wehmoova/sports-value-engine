@@ -27,6 +27,7 @@ from app.models.event import (
     Suspension,
     TennisStatistic,
 )
+from app.models.research import ResearchArtifact
 from app.models.system import ApiLog, ProviderPayloadAudit, ProviderStatus
 from app.models.user import Notification, User, UserSettings, Watchlist
 
@@ -54,6 +55,7 @@ __all__ = [
     "ProviderStatus",
     "ProviderPayloadAudit",
     "Recommendation",
+    "ResearchArtifact",
     "Sport",
     "Suspension",
     "Team",

@@ -148,8 +148,11 @@ async def upsert_event(
         event = await session.scalar(select(Event).where(Event.canonical_key == key))
         if (
             event is not None
-            and normalized.sport == "football"
-            and event.competition_id != competition.id
+            and (
+                event.competition_id != competition.id
+                or event.home_entity_id != home_id
+                or event.away_entity_id != away_id
+            )
         ):
             event = None
             key = hashlib.sha256(f"{key}|{provider}|{normalized.external_id}".encode()).hexdigest()

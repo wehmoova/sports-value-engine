@@ -1,4 +1,5 @@
 import asyncio
+import logging
 from datetime import UTC, datetime, timedelta
 from time import perf_counter
 from typing import Any
@@ -8,6 +9,7 @@ import httpx
 from app.core.config import Settings
 from app.providers.base import TennisProvider
 from app.providers.odds.the_odds_api import ProviderError, payload_hash
+from app.providers.retry import retry_delay
 
 
 class ApiTennisProvider(TennisProvider):
@@ -24,6 +26,7 @@ class ApiTennisProvider(TennisProvider):
         self.last_payload_hash: str | None = None
 
     async def _request(self, method: str, params: dict[str, str] | None = None) -> Any:
+        logging.getLogger("httpx").setLevel(logging.WARNING)
         request_params = {"method": method, "APIkey": self._api_key, **(params or {})}
         last_error: Exception | None = None
         for attempt in range(3):
@@ -32,6 +35,13 @@ class ApiTennisProvider(TennisProvider):
                 async with httpx.AsyncClient(timeout=self._timeout) as client:
                     response = await client.get(self._base_url, params=request_params)
                 self.last_status_code = response.status_code
+                if response.status_code == 429:
+                    delay = retry_delay(response.headers.get("Retry-After"), attempt)
+                    if delay > 60:
+                        raise PermissionError("API Tennis rate limit: defer and resume later")
+                    await asyncio.sleep(delay)
+                if response.status_code in {401, 403}:
+                    raise PermissionError(f"API Tennis access denied: {response.status_code}")
                 self.last_latency_ms = round((perf_counter() - started) * 1000, 1)
                 if response.status_code == 429 or response.status_code >= 500:
                     raise ProviderError(f"temporary API Tennis response: {response.status_code}")
