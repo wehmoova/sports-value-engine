@@ -67,10 +67,14 @@ as training samples. Backfill counts are unique events, not statistic snapshots.
 Implemented features: chronological Elo, football home advantage, regularized
 goal-for/against home/away Poisson strength, recent form, side-specific form and rest
 intervals. Tennis adds surface Elo only after enough surface matches, plus H2H only
-after five prior encounters. ATP and WTA datasets are separate. Historical ranking
-deltas, timestamped ancillary team stats, standings and opponent-adjusted rolling
-stats are not yet feature inputs. xG stays absent. Elo itself adjusts for opponent
-strength; goal estimates are not presented as measured xG.
+after five prior encounters. ATP and WTA datasets are separate. Prospective provider
+snapshots can additionally supply tennis ranking/ranking-point deltas and football
+team goal-rate and standings deltas. Exact-event context is used only when its
+observed, fetched and provider-updated timestamps are all strictly before the feature
+cutoff. Current/final season values are never backdated; a historical result backfill
+alone therefore cannot reconstruct these features. Missing provider fields stay null.
+Opponent-adjusted rolling ancillary statistics and xG stay absent. Elo itself adjusts
+for opponent strength; goal estimates are not presented as measured xG.
 
 The feature builder reconstructs histories conservatively and currently has quadratic
 cost; use bounded research windows, not unbounded multi-year jobs on the worker.
@@ -80,7 +84,32 @@ cost; use bounded research windows, not unbounded multi-year jobs on the worker.
 60% initial partition, 20% calibration, last 20% unseen chronological prequential
 evaluation. Labels used in calibration must be observed before test begins. Equal
 kickoffs cannot straddle train/test groups in the walk-forward split utility.
-Persisted datasets record exact contributing artifact IDs and feature version.
+Persisted datasets record exact contributing history artifact/statistic snapshot IDs,
+feature version, context evidence counts and per-feature coverage.
+
+### Context v2 safety and compatibility
+
+The patch was checked against `9ea2f40` before application. Context v2 also verifies
+the snapshot's provider-entity mapping, event participant side, sport and real-data
+origin. The stored payload hash must match the payload, and the prospective
+`OBSERVED_PROVIDER_SNAPSHOT` provenance marker and ingestion run must exist. Legacy
+snapshots without this evidence are excluded, not retroactively upgraded. Used
+context timestamps, provider IDs, hashes and source table names are copied into the
+dataset's `context_provenance` alongside snapshot IDs.
+
+Unavailable/invalid times, nonfinite numbers, invalid ranking positions, simultaneous
+conflicting snapshots and ambiguous standings groups fail closed. Team goal-rate
+features require a positive sample count. Rank/standings pairs must come from the
+same provider; ATP and WTA ranking maps are kept separate. Missing season IDs are
+not replaced with the current year. Unchanged consecutive snapshots are deduplicated;
+an A-to-B-to-A change creates a new observation with a new availability time.
+
+No schema migration is required. Feature version is now `strict-observed-v2`; existing
+v1 production artifacts cannot pass the inference feature-version check. The current
+baseline probability functions still consume their original Elo/Poisson/form inputs,
+not the newly collected context covariates. Training a model that uses these
+additional covariates and obtaining historical point-in-time coverage remain separate
+work. No promotion thresholds are relaxed by this patch.
 
 Brier is half the sum of squared class errors (equals usual binary Brier); log loss
 is multiclass, calibration/ECE is top-label reliability in ten bins. Market baseline

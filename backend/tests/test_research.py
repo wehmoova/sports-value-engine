@@ -22,6 +22,7 @@ from app.research.validation import (
     train_baseline,
     validate,
 )
+from app.services.football_sync import normalize_standings
 
 
 @pytest.mark.asyncio
@@ -107,6 +108,90 @@ def test_backfilled_today_does_not_pretend_past_availability():
         row["available_at"] = datetime.now(UTC).isoformat()
     result = build_dataset(rows, 3, 3)
     assert result["samples"] == [] and result["status"] == "INSUFFICIENT_DATA"
+
+
+def test_pre_match_ranking_context_is_used_and_cutoff_is_strict():
+    rows = histories(20)
+    target = rows[-1]
+    at = timestamp(target["start"])
+    observed = (at - timedelta(hours=2)).isoformat()
+    context = [
+        {
+            "snapshot_id": "rank-home",
+            "event_id": target["event_id"],
+            "kind": "tennis_ranking",
+            "side": "home",
+            "observed_at": observed,
+            "fetched_at": observed,
+            "source_updated_at": None,
+            "post_match": False,
+            "ranking": 5,
+            "ranking_points": 4000,
+        },
+        {
+            "snapshot_id": "rank-away",
+            "event_id": target["event_id"],
+            "kind": "tennis_ranking",
+            "side": "away",
+            "observed_at": observed,
+            "fetched_at": observed,
+            "source_updated_at": None,
+            "post_match": False,
+            "ranking": 20,
+            "ranking_points": 1200,
+        },
+    ]
+    sample = build_sample(target, rows, 3, 3, context)
+    assert sample is not None
+    assert sample["features"]["ranking_delta"] == 15
+    assert sample["features"]["ranking_points_delta"] == 2800
+    assert set(sample["context_source_ids"]) == {"rank-home", "rank-away"}
+
+    late = deepcopy(context)
+    late[1]["fetched_at"] = target["start"]
+    rejected = build_sample(target, rows, 3, 3, late)
+    assert rejected is not None
+    assert rejected["features"]["ranking_delta"] is None
+    assert rejected["context_source_ids"] == []
+
+    provider_late = deepcopy(context)
+    provider_late[1]["source_updated_at"] = target["start"]
+    rejected_provider_time = build_sample(target, rows, 3, 3, provider_late)
+    assert rejected_provider_time is not None
+    assert rejected_provider_time["features"]["ranking_delta"] is None
+
+
+def test_standings_are_normalized_across_supported_provider_shapes():
+    normalized = normalize_standings(
+        [
+            {
+                "league": {
+                    "standings": [
+                        [
+                            {
+                                "rank": 1,
+                                "team": {"id": 10},
+                                "points": 30,
+                                "goalsDiff": 12,
+                                "all": {"played": 15},
+                            }
+                        ]
+                    ]
+                }
+            },
+            {
+                "participant_id": 11,
+                "position": 2,
+                "points": 25,
+                "goal_difference": 7,
+                "played": 15,
+            },
+        ]
+    )
+    assert normalized["10"]["position"] == 1
+    assert normalized["10"]["goal_difference"] == 12
+    assert normalized["11"]["position"] == 2
+    assert normalized["11"]["played"] == 15
 
 
 def test_missing_surface_is_not_filled_with_overall_elo():

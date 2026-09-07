@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from math import isfinite
 from typing import Any
 
 from sqlalchemy import select
@@ -80,7 +81,8 @@ def _number(value: object) -> float | None:
     if value is None:
         return None
     try:
-        return float(str(value).replace("%", ""))
+        number = float(str(value).replace("%", ""))
+        return number if isfinite(number) and not isinstance(value, bool) else None
     except ValueError:
         return None
 
@@ -97,17 +99,22 @@ def _stat_lookup(record: dict[str, Any], player_key: str) -> dict[str, float]:
     return found
 
 
-def _ranking_map(rows: list[dict[str, Any]]) -> dict[str, tuple[int | None, int | None]]:
-    result: dict[str, tuple[int | None, int | None]] = {}
+def _ranking_map(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
     for row in rows:
         key = str(row.get("player_key") or row.get("id") or "")
         rank = _number(row.get("place") or row.get("ranking") or row.get("rank"))
-        points = _number(row.get("points") or row.get("ranking_points"))
+        points = _number(row.get("points", row.get("ranking_points")))
         if key:
-            result[key] = (
-                int(rank) if rank is not None else None,
-                int(points) if points is not None else None,
-            )
+            result[key] = {
+                "ranking": int(rank)
+                if rank is not None and rank > 0 and rank.is_integer()
+                else None,
+                "ranking_points": int(points)
+                if points is not None and points >= 0 and points.is_integer()
+                else None,
+                "raw": row,
+            }
     return result
 
 
@@ -184,27 +191,43 @@ async def sync_tennis_statistics(
     run_id: str,
 ) -> int:
     atp, wta = await provider.get_rankings("ATP"), await provider.get_rankings("WTA")
-    rankings = _ranking_map(atp + wta)
+    rankings_by_tour = {"tennis_atp": _ranking_map(atp), "tennis_wta": _ranking_map(wta)}
+    observed_at = datetime.now(UTC)
     created = 0
     for event, raw, normalized in fixtures:
-        digest = normalized.raw_payload_hash or payload_hash(raw)
         for side, entity_id, external_id in (
             ("home", event.home_entity_id, normalized.home_external_id),
             ("away", event.away_entity_id, normalized.away_external_id),
         ):
             if not external_id:
                 continue
+            stats = _stat_lookup(raw, external_id)
+            ranking = rankings_by_tour.get(normalized.sport, {}).get(external_id)
+            rank = ranking.get("ranking") if ranking else None
+            points = ranking.get("ranking_points") if ranking else None
+            snapshot_payload = {
+                "fixture": raw,
+                "ranking": ranking.get("raw") if ranking else None,
+                "ranking_normalized": {"ranking": rank, "ranking_points": points},
+                "availability_basis": "OBSERVED_PROVIDER_SNAPSHOT",
+                "tour": normalized.sport,
+                "post_match": normalized.status == "FINAL" or normalized.start_time <= observed_at,
+            }
+            digest = payload_hash(snapshot_payload)
             existing = await session.scalar(
-                select(TennisStatistic).where(
+                select(TennisStatistic)
+                .where(
                     TennisStatistic.event_id == event.id,
                     TennisStatistic.side == side,
-                    TennisStatistic.raw_payload_hash == digest,
+                    TennisStatistic.source_provider == "api_tennis",
+                    TennisStatistic.payload["availability_basis"].as_string()
+                    == "OBSERVED_PROVIDER_SNAPSHOT",
                 )
+                .order_by(TennisStatistic.observed_at.desc(), TennisStatistic.id.desc())
+                .limit(1)
             )
-            if existing is not None:
+            if existing is not None and existing.raw_payload_hash == digest:
                 continue
-            stats = _stat_lookup(raw, external_id)
-            rank, points = rankings.get(external_id, (None, None))
             session.add(
                 TennisStatistic(
                     event_id=event.id,
@@ -222,11 +245,11 @@ async def sync_tennis_statistics(
                     second_serve_won_pct=stats.get("2nd serve points won"),
                     return_points_won_pct=stats.get("return points won"),
                     matches_last_7_days=None,
-                    payload={"fixture": raw, "ranking": rankings.get(external_id)},
-                    observed_at=datetime.now(UTC),
+                    payload=snapshot_payload,
+                    observed_at=observed_at,
                     source_provider="api_tennis",
                     provider_entity_id=external_id,
-                    fetched_at=datetime.now(UTC),
+                    fetched_at=observed_at,
                     raw_payload_hash=digest,
                     ingestion_run_id=run_id,
                 )

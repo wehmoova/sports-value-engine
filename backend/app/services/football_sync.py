@@ -1,4 +1,5 @@
 from datetime import UTC, datetime, timedelta
+from math import isfinite
 from typing import Any
 
 from sqlalchemy import select
@@ -7,7 +8,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings
 from app.models import Event, FootballStatistic, Injury, Lineup, Suspension
 from app.providers.base import FootballProvider, NormalizedEvent
-from app.providers.odds.the_odds_api import payload_hash
+from app.providers.odds.the_odds_api import ProviderError, payload_hash
 from app.services.ingestion import upsert_event
 
 
@@ -22,7 +23,8 @@ def _float(value: object) -> float | None:
     if value is None:
         return None
     try:
-        return float(str(value).replace("%", ""))
+        number = float(str(value).replace("%", ""))
+        return number if isfinite(number) and not isinstance(value, bool) else None
     except ValueError:
         return None
 
@@ -129,7 +131,7 @@ def _team_context(
         teams = record.get("teams", {})
         return (
             str(league.get("id") or ""),
-            int(league.get("season") or datetime.now(UTC).year),
+            int(league.get("season") or 0),
             [
                 ("home", str(teams.get("home", {}).get("id") or "")),
                 ("away", str(teams.get("away", {}).get("id") or "")),
@@ -137,7 +139,7 @@ def _team_context(
         )
     return (
         str(record.get("league_id") or ""),
-        int(record.get("season_id") or datetime.now(UTC).year),
+        int(record.get("season_id") or 0),
         [
             (
                 str(item.get("meta", {}).get("location")),
@@ -156,6 +158,81 @@ def _team_metric(payload: dict[str, Any], path: tuple[str, ...]) -> float | None
             return None
         value = value.get(key)
     return _float(value)
+
+
+def _flatten_standings(value: Any) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    if isinstance(value, list):
+        for item in value:
+            rows.extend(_flatten_standings(item))
+        return rows
+    if not isinstance(value, dict):
+        return rows
+    league = value.get("league")
+    if isinstance(league, dict) and isinstance(league.get("standings"), list):
+        return _flatten_standings(league["standings"])
+    nested = value.get("standings")
+    if isinstance(nested, list):
+        return _flatten_standings(nested)
+    rows.append(value)
+    return rows
+
+
+def normalize_standings(rows: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    ambiguous: set[str] = set()
+    for row in _flatten_standings(rows):
+        team = row.get("team")
+        if not isinstance(team, dict):
+            team = {}
+        participant = row.get("participant")
+        if not isinstance(participant, dict):
+            participant = {}
+        team_id = (
+            row.get("participant_id")
+            or row.get("team_id")
+            or team.get("id")
+            or participant.get("id")
+        )
+        if not team_id:
+            continue
+        position_value = row.get("position")
+        if position_value is None:
+            position_value = row.get("rank")
+        goal_difference_value = row.get("goal_difference")
+        if goal_difference_value is None:
+            goal_difference_value = row.get("goalDifference")
+        if goal_difference_value is None:
+            goal_difference_value = row.get("goalsDiff")
+        all_stats = row.get("all") if isinstance(row.get("all"), dict) else {}
+        position = _float(position_value)
+        played = _float(all_stats.get("played") if all_stats else row.get("played"))
+        normalized = {
+            "position": int(position)
+            if position is not None and position > 0 and position.is_integer()
+            else None,
+            "points": _float(row.get("points")),
+            "goal_difference": _float(goal_difference_value),
+            "played": int(played)
+            if played is not None and played >= 0 and played.is_integer()
+            else None,
+            "raw": row,
+        }
+        identity = str(team_id)
+        if identity in ambiguous:
+            continue
+        if identity in result and result[identity] != normalized:
+            ambiguous.add(identity)
+            result.pop(identity)
+            continue
+        result[identity] = normalized
+    return result
+
+
+def _set_capability(provider: FootballProvider, key: str, status: str) -> None:
+    capabilities = getattr(provider, "capabilities", None)
+    if isinstance(capabilities, dict):
+        capabilities[key] = status
 
 
 async def sync_football_events(
@@ -188,36 +265,59 @@ async def _store_team_statistics(
     provider_key: str,
     raw_fixture: dict[str, Any],
     run_id: str,
+    standings: dict[str, dict[str, Any]],
 ) -> int:
     league_id, season, sides = _team_context(raw_fixture, provider_key)
     created = 0
     for side, team_external_id in sides:
-        if not team_external_id or not league_id:
+        if not team_external_id or not league_id or season <= 0:
             continue
-        payload = await provider.get_team_stats(team_external_id, league_id, season)
-        if not payload:
+        standing = standings.get(team_external_id)
+        try:
+            team_payload = await provider.get_team_stats(team_external_id, league_id, season)
+        except (PermissionError, ProviderError):
+            team_payload = {}
+        if not team_payload and standing is None:
             continue
-        digest = payload_hash(payload)
+        observed_at = datetime.now(UTC)
+        snapshot_payload = {
+            "team_statistics": team_payload or None,
+            "standing": standing,
+            "availability_basis": "OBSERVED_PROVIDER_SNAPSHOT",
+            "league_id": league_id,
+            "season": season,
+            "post_match": event.status == "FINAL" or _datetime(event.start_time) <= observed_at,
+        }
+        digest = payload_hash(snapshot_payload)
         existing = await session.scalar(
-            select(FootballStatistic).where(
+            select(FootballStatistic)
+            .where(
                 FootballStatistic.event_id == event.id,
                 FootballStatistic.side == side,
-                FootballStatistic.raw_payload_hash == digest,
+                FootballStatistic.source_provider == provider_key,
+                FootballStatistic.payload["availability_basis"].as_string()
+                == "OBSERVED_PROVIDER_SNAPSHOT",
             )
+            .order_by(FootballStatistic.observed_at.desc(), FootballStatistic.id.desc())
+            .limit(1)
         )
-        if existing is not None:
+        if existing is not None and existing.raw_payload_hash == digest:
             continue
         team_id = event.home_entity_id if side == "home" else event.away_entity_id
-        sample = int(_team_metric(payload, ("fixtures", "played", "total")) or 0)
+        sample = int(
+            _team_metric(team_payload, ("fixtures", "played", "total"))
+            or _float(standing.get("played") if standing else None)
+            or 0
+        )
         session.add(
             FootballStatistic(
                 event_id=event.id,
                 team_id=team_id,
                 side=side,
                 sample_size=sample,
-                goals_per_match=_team_metric(payload, ("goals", "for", "average", "total")),
+                goals_per_match=_team_metric(team_payload, ("goals", "for", "average", "total")),
                 goals_against_per_match=_team_metric(
-                    payload, ("goals", "against", "average", "total")
+                    team_payload, ("goals", "against", "average", "total")
                 ),
                 xg_per_match=None,
                 xga_per_match=None,
@@ -225,11 +325,11 @@ async def _store_team_statistics(
                 shots_on_target_per_match=None,
                 form_points=None,
                 rest_days=None,
-                payload=payload,
-                observed_at=datetime.now(UTC),
+                payload=snapshot_payload,
+                observed_at=observed_at,
                 source_provider=provider_key,
                 provider_entity_id=team_external_id,
-                fetched_at=datetime.now(UTC),
+                fetched_at=observed_at,
                 raw_payload_hash=digest,
                 ingestion_run_id=run_id,
             )
@@ -247,7 +347,22 @@ async def sync_football_statistics(
     limit: int,
 ) -> int:
     created = 0
+    standings_cache: dict[tuple[str, int], dict[str, dict[str, Any]]] = {}
     for event, raw in fixtures[:limit]:
+        league_id, season, _ = _team_context(raw, provider_key)
+        key = (league_id, season)
+        if league_id and season > 0 and key not in standings_cache:
+            try:
+                raw_standings = await provider.get_standings(league_id, season)
+                standings_cache[key] = normalize_standings(raw_standings)
+                _set_capability(provider, "standings", "AVAILABLE" if raw_standings else "EMPTY")
+            except (PermissionError, ProviderError):
+                standings_cache[key] = {}
+                _set_capability(
+                    provider,
+                    "standings",
+                    "FORBIDDEN" if getattr(provider, "last_status_code", None) == 403 else "FAILED",
+                )
         created += await _store_team_statistics(
             session,
             event=event,
@@ -255,6 +370,7 @@ async def sync_football_statistics(
             provider_key=provider_key,
             raw_fixture=raw,
             run_id=run_id,
+            standings=standings_cache.get(key, {}),
         )
     await session.flush()
     return created

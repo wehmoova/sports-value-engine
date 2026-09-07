@@ -15,6 +15,7 @@ from app.database.session import SessionLocal, engine
 from app.models import Event, ModelPrediction, ModelRegistry, Recommendation, Sport
 from app.models.research import ResearchArtifact
 from app.research.backfill import backfill
+from app.research.context import load_context_snapshots
 from app.research.features import build_dataset
 from app.research.markets import attach_market_baseline
 from app.research.store import artifact
@@ -129,12 +130,19 @@ async def execute(args: argparse.Namespace) -> dict[str, Any]:
                 )
             )
             records = [{**h.payload, "artifact_id": h.id, "sport": h.sport} for h in histories]
+            context_records = await load_context_snapshots(
+                session,
+                args.sport,
+                [str(h.payload["event_id"]) for h in histories if h.payload.get("event_id")],
+            )
             minimum = (
                 settings.min_football_history_matches
                 if args.sport == "football"
                 else settings.min_tennis_history_matches
             )
-            result = build_dataset(records, minimum, settings.min_participant_history_matches)
+            result = build_dataset(
+                records, minimum, settings.min_participant_history_matches, context_records
+            )
             row = await artifact(session, "dataset", args.sport, result, status=result["status"])
         elif args.command == "train":
             dataset = await required(session, args.dataset, "dataset")

@@ -9,8 +9,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import Settings
 from app.models import ApiLog, FootballStatistic
 from app.providers.football.sportmonks import SportmonksFootballProvider
-from app.providers.odds.the_odds_api import ProviderError, payload_hash
-from app.services.football_sync import normalize_football_fixture
+from app.providers.odds.the_odds_api import payload_hash
+from app.services.football_sync import normalize_football_fixture, sync_football_statistics
 from app.services.ingestion import upsert_event
 
 
@@ -62,7 +62,7 @@ async def sync_sportmonks_data(
     # Never roll back valid fixtures because premium access is denied.
     statistics = 0
     provider.capabilities.update(
-        statistics="NOT_TESTED", lineups="NOT_TESTED", xg="NOT_TESTED", standings="NOT_TESTED"
+        statistics="NOT_TESTED", lineups="NOT_TESTED", xg="DISABLED", standings="NOT_TESTED"
     )
     for event, row in fixtures[: config.provider_detail_event_limit]:
         data = await provider.optional_fixture(str(row["id"]), "statistics", "statistics.type")
@@ -127,18 +127,17 @@ async def sync_sportmonks_data(
                 statistics += 1
         if provider.capabilities["statistics"] == "FORBIDDEN":
             break
+    statistics += await sync_football_statistics(
+        session,
+        provider,
+        "sportmonks",
+        fixtures,
+        run_id,
+        config.provider_detail_event_limit,
+    )
     if fixtures:
         first = fixtures[0][1]
         await provider.optional_fixture(str(first["id"]), "lineups", "lineups")
-        await provider.optional_fixture(str(first["id"]), "xg", "xGFixture")
-        if first.get("season_id"):
-            try:
-                await provider.get_standings("", int(first["season_id"]))
-                provider.capabilities["standings"] = "AVAILABLE"
-            except (PermissionError, ProviderError):
-                provider.capabilities["standings"] = (
-                    "FORBIDDEN" if provider.last_status_code == 403 else "FAILED"
-                )
     provider.capabilities["normalization_rejected"] = invalid
     session.add(
         ApiLog(

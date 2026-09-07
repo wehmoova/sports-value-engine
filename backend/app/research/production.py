@@ -9,6 +9,7 @@ from app.analytics.value.engine import evaluate_value
 from app.core.config import settings
 from app.models import Event, ModelPrediction, ModelRegistry, Recommendation, Sport
 from app.models.research import ResearchArtifact
+from app.research.context import load_context_snapshots
 from app.research.features import FEATURE_VERSION, build_sample, timestamp
 from app.research.markets import market_at
 from app.research.validation import probabilities
@@ -64,6 +65,9 @@ async def infer(session: AsyncSession, run_id: str) -> tuple[int, int]:
                 )
             )
         )
+        context_records = await load_context_snapshots(
+            session, model.sport, [event.id for event in events]
+        )
         for event in events:
             # Prediction-time cutoff, never future kickoff or the event's final score.
             sample = build_sample(
@@ -81,6 +85,7 @@ async def infer(session: AsyncSession, run_id: str) -> tuple[int, int]:
                 records,
                 minimum,
                 settings.min_participant_history_matches,
+                context_records,
             )
             if sample is None:
                 continue
