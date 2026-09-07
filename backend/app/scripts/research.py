@@ -85,7 +85,7 @@ async def status_report(session: AsyncSession) -> dict[str, Any]:
         "HISTORICAL_TENNIS_RECORDS": len(
             {h.payload["event_id"] for h in histories if h.sport.startswith("tennis")}
         ),
-        "FINAL_EVENTS_OUTSIDE_RESEARCH_ARCHIVE": final_events,
+        "FINAL_REAL_EVENTS": final_events,
         "TRAINING_SAMPLES": latest_datasets,
         "VALIDATION_METRICS": [
             {"id": v.id, "model": v.payload.get("model"), "metrics": v.payload.get("metrics")}
@@ -161,6 +161,7 @@ async def execute(args: argparse.Namespace) -> dict[str, Any]:
             # Recompute from stored source artifact, not caller-supplied summary metrics.
             recomputed = validate(dataset.payload, trained.payload)
             recomputed["model"] = trained.payload["model"]
+            recomputed["trained_id"] = trained.id
             await attach_market_baseline(session, recomputed)
             checks = promotion_checks(recomputed, settings)
             result = {

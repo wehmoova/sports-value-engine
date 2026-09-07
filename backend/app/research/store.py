@@ -16,7 +16,7 @@ async def artifact(
     status: str = "COMPLETED",
     key: str | None = None,
 ) -> ResearchArtifact:
-    identity = key or payload_hash(payload)
+    identity = key or payload_hash({"sport": sport, "payload": payload})
     existing = await session.scalar(
         select(ResearchArtifact).where(
             ResearchArtifact.kind == kind,

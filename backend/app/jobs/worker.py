@@ -1,6 +1,7 @@
 """Persistent scheduler and durable manual-job consumer. No web process required."""
 
 import asyncio
+import logging
 import signal
 from contextlib import suppress
 from datetime import UTC, datetime
@@ -68,6 +69,7 @@ async def serve() -> None:
 
 
 if __name__ == "__main__":
+    logging.basicConfig(level=logging.INFO)
 
     async def main() -> None:
         task = asyncio.create_task(serve())

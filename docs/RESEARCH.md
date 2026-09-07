@@ -87,7 +87,9 @@ is multiclass, calibration/ECE is top-label reliability in ten bins. Market base
 requires two complete, timestamp-matched bookmaker markets observed and fetched
 before cutoff, no-vig per bookmaker then consensus. Outliers are rejected.
 ROI is explicitly hypothetical flat-unit EV research, not actual bankroll performance.
-CLV remains null without distinct verifiable execution/closing observations.
+CLV compares earlier persisted recommendation prices for the exact model version
+against verified final-five-minute best prices. It remains null without both
+observations; recommendation price CLV is not evidence of an executed wager.
 
 Promotion is never a scheduler action. Explicit CLI promotion recomputes evidence
 and checks configured sample/Brier/log-loss/ECE thresholds, sufficient matched market

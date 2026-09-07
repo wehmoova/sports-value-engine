@@ -9,7 +9,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.analytics.value.engine import classify_odds_prices, consensus_no_vig
-from app.models import Event, OddsSnapshot
+from app.models import Event, ModelPrediction, OddsSnapshot, Recommendation
 from app.research.features import timestamp
 from app.research.validation import scores
 
@@ -108,8 +108,26 @@ async def attach_market_baseline(session: AsyncSession, report: dict[str, Any]) 
         )
         if row["probabilities"][pick] * market["best"][pick] - 1 >= 0.03:
             profits.append(market["best"][pick] - 1 if pick == row["outcome"] else -1)
-        # No distinct execution timestamp is reconstructed; CLV is unavailable,
-        # rather than comparing the same closing observation with itself.
+        closing = await market_at(session, event, at, max_age=timedelta(minutes=5))
+        if closing is not None and report.get("trained_id"):
+            earlier = list(
+                await session.scalars(
+                    select(Recommendation)
+                    .join(ModelPrediction, ModelPrediction.id == Recommendation.prediction_id)
+                    .where(
+                        Recommendation.event_id == event.id,
+                        Recommendation.is_demo.is_(False),
+                        Recommendation.data_origin == "REAL",
+                        Recommendation.odds_timestamp < at - timedelta(minutes=5),
+                        ModelPrediction.prediction_timestamp < at - timedelta(minutes=5),
+                        ModelPrediction.model_version == report["trained_id"],
+                    )
+                )
+            )
+            for recommendation in earlier:
+                if recommendation.selection in closing["selections"]:
+                    index = closing["selections"].index(recommendation.selection)
+                    clvs.append(recommendation.best_odds / closing["best"][index] - 1)
     report["market_baseline"] = scores(market_rows)
     report["matched_model_metrics"] = scores(model_rows)
     report["market_comparison_samples"] = len(market_rows)
