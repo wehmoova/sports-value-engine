@@ -1,0 +1,1 @@
+"""Football modelling pipeline."""

@@ -1,0 +1,80 @@
+name: sports-value-engine
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-sports_value_engine}
+      POSTGRES_USER: ${POSTGRES_USER:-sve}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-change-me}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-sve} -d ${POSTGRES_DB:-sports_value_engine}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+
+  backend:
+    build:
+      context: ./backend
+    environment: &backend_environment
+      DATABASE_URL: ${DATABASE_URL:-postgresql+asyncpg://sve:change-me@postgres:5432/sports_value_engine}
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3001}
+      ENVIRONMENT: ${ENVIRONMENT:-development}
+      APP_TIMEZONE: ${APP_TIMEZONE:-Europe/Berlin}
+      DATA_MODE: real
+      ENABLE_MOCK_DATA: "false"
+      ENABLE_SIMULATION: "false"
+      SCHEDULER_ENABLED: "false"
+      ODDS_SYNC_INTERVAL_MINUTES: ${ODDS_SYNC_INTERVAL_MINUTES:-30}
+      ADMIN_API_TOKEN: ${ADMIN_API_TOKEN:-}
+      FOOTBALL_PROVIDER: ${FOOTBALL_PROVIDER:-sportmonks}
+      TENNIS_PROVIDER: api_tennis
+      THE_ODDS_API_KEY: ${THE_ODDS_API_KEY:-}
+      API_FOOTBALL_KEY: ${API_FOOTBALL_KEY:-}
+      SPORTMONKS_API_TOKEN: ${SPORTMONKS_API_TOKEN:-}
+      API_TENNIS_KEY: ${API_TENNIS_KEY:-}
+      BETFAIR_APP_KEY: ${BETFAIR_APP_KEY:-}
+    command: ["sh", "-c", "alembic upgrade head && uvicorn app.main:app --host 0.0.0.0 --port 8000"]
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health', timeout=3)"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+    ports:
+      - "8000:8000"
+
+  worker:
+    build:
+      context: ./backend
+    environment: *backend_environment
+    command: ["python", "-m", "app.jobs.worker"]
+    restart: unless-stopped
+    depends_on:
+      backend:
+        condition: service_healthy
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+        NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-http://localhost:3001}
+    environment:
+      INTERNAL_API_URL: ${INTERNAL_API_URL:-http://backend:8000}
+      NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+      NEXT_PUBLIC_SITE_URL: ${NEXT_PUBLIC_SITE_URL:-http://localhost:3001}
+    depends_on:
+      backend:
+        condition: service_healthy
+    ports:
+      - "3001:3001"
+
+volumes:
+  postgres_data:
