@@ -169,10 +169,17 @@ def build_sample(
     min_history: int,
     min_player: int,
     context_records: list[dict[str, Any]] | None = None,
+    *,
+    exclusions: list[str] | None = None,
 ) -> dict[str, Any] | None:
+    def reject(reason: str) -> None:
+        if exclusions is not None:
+            exclusions.append(reason)
+
     at = timestamp(event["start"])
     prior = eligible_history(records, at)
     if len(prior) < min_history:
+        reject("insufficient_available_history")
         return None
     football = event["sport"] == "football"
     ratings: dict[str, float] = defaultdict(lambda: 1500.0)
@@ -199,6 +206,7 @@ def build_sample(
         appearances[away].append(row)
     home, away = event["home"], event["away"]
     if min(len(appearances[home]), len(appearances[away])) < min_player:
+        reject("insufficient_participant_history")
         return None
 
     def points(row: dict[str, Any], player: str) -> float:
@@ -238,6 +246,7 @@ def build_sample(
         away_games = [r for r in appearances[away] if r["away"] == away][-20:]
         league = [r for r in prior if r["competition"] == event["competition"]]
         if min(len(home_games), len(away_games)) < 3 or len(league) < 20:
+            reject("insufficient_home_away_or_league_history")
             return None
         base_home = mean(float(r["home_score"]) for r in league)
         base_away = mean(float(r["away_score"]) for r in league)
@@ -247,6 +256,7 @@ def build_sample(
             return (sum(float(r[field]) for r in rows) + 3 * baseline) / (len(rows) + 3)
 
         if min(base_home, base_away) <= 0:
+            reject("nonpositive_league_goal_baseline")
             return None
         features.update(
             home_goal_rate=rate(home_games, "home_score", base_home)

@@ -2,6 +2,7 @@
 
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
+from types import SimpleNamespace
 from unittest.mock import AsyncMock
 
 import pytest
@@ -137,7 +138,16 @@ async def test_missing_season_does_not_request_guessed_standings():
             session,
             provider,
             "sportmonks",
-            [(None, {"league_id": 1, "participants": []})],
+            [
+                (
+                    SimpleNamespace(
+                        id="missing-season",
+                        status="SCHEDULED",
+                        start_time=datetime.now(UTC) + timedelta(days=1),
+                    ),
+                    {"league_id": 1, "participants": []},
+                )
+            ],
             "test",
             1,
         )

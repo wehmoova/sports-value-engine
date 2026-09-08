@@ -10,7 +10,6 @@ import httpx
 from app.core.config import Settings
 from app.providers.base import FootballProvider
 from app.providers.odds.the_odds_api import ProviderError, payload_hash
-from app.providers.retry import retry_delay
 from app.scripts.sportmonks_smoke import redact
 
 
@@ -42,11 +41,6 @@ class SportmonksFootballProvider(FootballProvider):
                         f"{self._base_url}/{path.lstrip('/')}", params=request_params
                     )
                 self.last_status_code = response.status_code
-                if response.status_code == 429:
-                    delay = retry_delay(response.headers.get("Retry-After"), attempt)
-                    if delay > 60:
-                        raise PermissionError("Sportmonks rate limit: defer and resume later")
-                    await asyncio.sleep(delay)
                 self.last_latency_ms = round((perf_counter() - started) * 1000, 1)
                 try:
                     diagnostic_body = response.json()
@@ -78,9 +72,11 @@ class SportmonksFootballProvider(FootballProvider):
                 if response.status_code >= 400:
                     diagnostic["response_body"] = redact(diagnostic_body, [self._token])
                 print(json.dumps(diagnostic, default=str))
+                if response.status_code == 429:
+                    raise PermissionError("Sportmonks rate limit: defer and resume later")
                 if response.status_code in {400, 401, 403, 404, 422}:
                     raise PermissionError(json.dumps(diagnostic, default=str))
-                if response.status_code == 429 or response.status_code >= 500:
+                if response.status_code >= 500:
                     raise ProviderError(f"temporary Sportmonks response: {response.status_code}")
                 response.raise_for_status()
                 body = response.json()
@@ -154,9 +150,20 @@ class SportmonksFootballProvider(FootballProvider):
     async def get_team_stats(
         self, team_external_id: str, competition_external_id: str, season: int
     ) -> dict[str, Any]:
-        del competition_external_id, season
+        del competition_external_id
+        if season <= 0:
+            raise ValueError("Team statistics require a provider season ID")
         records = self._records(
-            await self._request(f"teams/{team_external_id}", {"include": "statistics"})
+            await self._request(
+                f"teams/{team_external_id}",
+                {
+                    "include": "statistics.details",
+                    # Explicit allowlist: goals, goals conceded, games played. Never xG.
+                    "filters": (
+                        f"teamStatisticSeasons:{season};teamStatisticDetailTypes:52,88,27263"
+                    ),
+                },
+            )
         )
         return records[0] if records else {}
 
@@ -171,7 +178,7 @@ class SportmonksFootballProvider(FootballProvider):
         self, competition_external_id: str, season: int
     ) -> list[dict[str, Any]]:
         del competition_external_id
-        return self._records(await self._request(f"standings/seasons/{season}"))
+        return await self._paged(f"standings/seasons/{season}")
 
     async def _fixture(self, event_external_id: str, include: str) -> dict[str, Any]:
         records = self._records(

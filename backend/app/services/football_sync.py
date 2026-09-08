@@ -160,6 +160,36 @@ def _team_metric(payload: dict[str, Any], path: tuple[str, ...]) -> float | None
     return _float(value)
 
 
+def sportmonks_team_metrics(
+    payload: dict[str, Any],
+    team_id: str,
+    season: int,
+) -> tuple[int, float | None, float | None]:
+    """Read observed provider values only; fail closed on ambiguous season/details."""
+    if str(payload.get("id")) != team_id:
+        return 0, None, None
+    seasons = [
+        r
+        for r in payload.get("statistics", [])
+        if isinstance(r, dict) and r.get("season_id") == season and str(r.get("team_id")) == team_id
+    ]
+    if len(seasons) != 1:
+        return 0, None, None
+    details = seasons[0].get("details", [])
+
+    def metric(type_id: int, path: tuple[str, ...]) -> float | None:
+        rows = [r for r in details if isinstance(r, dict) and r.get("type_id") == type_id]
+        if len(rows) != 1 or not isinstance(rows[0].get("value"), dict):
+            return None
+        value = _team_metric(rows[0]["value"], path)
+        return value if value is not None and value >= 0 else None
+
+    sample = metric(27263, ("total",))
+    if sample is None or sample <= 0 or not sample.is_integer():
+        return 0, None, None
+    return int(sample), metric(52, ("all", "average")), metric(88, ("all", "average"))
+
+
 def _flatten_standings(value: Any) -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     if isinstance(value, list):
@@ -309,16 +339,20 @@ async def _store_team_statistics(
             or _float(standing.get("played") if standing else None)
             or 0
         )
+        goals_for = _team_metric(team_payload, ("goals", "for", "average", "total"))
+        goals_against = _team_metric(team_payload, ("goals", "against", "average", "total"))
+        if provider_key == "sportmonks":
+            sample, goals_for, goals_against = sportmonks_team_metrics(
+                team_payload, team_external_id, season
+            )
         session.add(
             FootballStatistic(
                 event_id=event.id,
                 team_id=team_id,
                 side=side,
                 sample_size=sample,
-                goals_per_match=_team_metric(team_payload, ("goals", "for", "average", "total")),
-                goals_against_per_match=_team_metric(
-                    team_payload, ("goals", "against", "average", "total")
-                ),
+                goals_per_match=goals_for,
+                goals_against_per_match=goals_against,
                 xg_per_match=None,
                 xga_per_match=None,
                 shots_per_match=None,
@@ -348,7 +382,17 @@ async def sync_football_statistics(
 ) -> int:
     created = 0
     standings_cache: dict[tuple[str, int], dict[str, dict[str, Any]]] = {}
-    for event, raw in fixtures[:limit]:
+    # Historical fixture order must not starve prospective evidence collection.
+    now = datetime.now(UTC)
+    ordered = sorted(
+        fixtures,
+        key=lambda pair: (
+            pair[0].status == "FINAL" or _datetime(pair[0].start_time) <= now,
+            _datetime(pair[0].start_time),
+            pair[0].id,
+        ),
+    )
+    for event, raw in ordered[:limit]:
         league_id, season, _ = _team_context(raw, provider_key)
         key = (league_id, season)
         if league_id and season > 0 and key not in standings_cache:

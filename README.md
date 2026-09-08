@@ -11,6 +11,10 @@ Historical research and worker rolling-deployment changes are documented in
 and immutable research artifacts. No model is promoted automatically. Backfilled
 data without proven historical availability cannot silently qualify a backtest.
 
+Football point-in-time diagnostics, season-scoped provider statistics and bounded
+dry-run/resumable backfills: [coverage runbook](docs/football-history-coverage.md).
+No xG, training, promotion or availability-gate relaxation is part of this change.
+
 1. Optionally copy `.env.example` to `.env` and add `THE_ODDS_API_KEY`.
 2. Run `docker compose up --build` (it also works without `.env`).
 3. Open [http://localhost:3001](http://localhost:3001), [http://localhost:8000/docs](http://localhost:8000/docs), or [http://localhost:8000/health](http://localhost:8000/health).

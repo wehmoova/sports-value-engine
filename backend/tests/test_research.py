@@ -267,6 +267,7 @@ async def test_history_is_idempotent_and_inference_is_empty_without_production_m
     }
     async with SessionLocal() as session:
         assert await persist_result(session, raw, "api_tennis", "first")
+        assert not await persist_result(session, raw, "api_tennis", "first")
         assert not await persist_result(session, raw, "api_tennis", "second")
         count = await session.scalar(
             select(func.count())

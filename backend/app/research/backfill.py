@@ -15,6 +15,7 @@ from app.models.research import ResearchArtifact
 from app.providers.football.sportmonks import SportmonksFootballProvider
 from app.providers.odds.the_odds_api import ProviderError, payload_hash
 from app.providers.tennis.api_tennis import ApiTennisProvider
+from app.research.historical_pages import football_page, preview
 from app.research.store import artifact
 from app.services.football_sync import normalize_football_fixture
 from app.services.ingestion import upsert_event
@@ -63,7 +64,13 @@ async def persist_result(
     event = await upsert_event(session, normalized=normalized, provider=provider, run_id=run_id)
     now = datetime.now(UTC)
     digest = payload_hash(raw)
-    history = await artifact(
+    identity = f"{provider}:{normalized.external_id}:{digest}"
+    existing_history = await session.scalar(
+        select(ResearchArtifact.id).where(
+            ResearchArtifact.kind == "history", ResearchArtifact.artifact_key == identity
+        )
+    )
+    await artifact(
         session,
         "history",
         normalized.sport,
@@ -86,7 +93,7 @@ async def persist_result(
             "raw": raw,
             "run_id": run_id,
         },
-        key=f"{provider}:{normalized.external_id}:{digest}",
+        key=identity,
     )
     # No current rankings/standings are assigned to historical match dates.
     # Raw post-match stats remain available for inspection, not pre-match features.
@@ -156,29 +163,58 @@ async def persist_result(
                             ingestion_run_id=run_id,
                         )
                     )
-    return bool(history.payload["run_id"] == run_id)
+    return existing_history is None
 
 
-async def backfill(sport: str, start: date, end: date, max_pages: int = 100) -> dict[str, Any]:
+async def backfill(
+    sport: str,
+    start: date,
+    end: date,
+    max_pages: int = 100,
+    *,
+    league: int | None = None,
+    season: int | None = None,
+    window_days: int = 1,
+    dry_run: bool = False,
+) -> dict[str, Any]:
     dates = days(start, end)
     if max_pages < 1:
         raise ValueError("max_pages must be positive")
     if not settings.is_real_mode or settings.enable_mock_data:
         raise ValueError("Historical backfill requires real mode")
+    if not 1 <= window_days <= 31:
+        raise ValueError("window_days must be between 1 and 31")
+    if sport != "football" and (league or season or dry_run or window_days != 1):
+        raise ValueError("These backfill options are football-only")
+    if season is not None and league is None:
+        raise ValueError("Season selection requires an explicit accessible league")
+    windows = [
+        (dates[i], dates[min(i + window_days - 1, len(dates) - 1)])
+        for i in range(0, len(dates), window_days)
+    ]
+    football = SportmonksFootballProvider(settings) if sport == "football" else None
+    if football:
+        await football.discover_leagues()
+    leagues = football.accessible_league_ids if football else [0]
+    if league is not None:
+        if league not in leagues:
+            raise ValueError("League is not accessible under the provider subscription")
+        leagues = [league]
+    if dry_run:
+        assert football is not None
+        return await preview(football, windows, leagues, season, max_pages)
     async with job_lock("analysis-execute") as acquired:
         if not acquired:
             return {"status": "BUSY", "resume": True}
-        football = SportmonksFootballProvider(settings) if sport == "football" else None
         tennis = ApiTennisProvider(settings) if sport == "tennis" else None
-        if football:
-            await football.discover_leagues()
-        leagues = football.accessible_league_ids if football else [0]
         completed = inserted = skipped = 0
-        for day in dates:
+        for day, window_end in windows:
             for league in leagues:
                 page = 1
                 while True:
                     key = f"v1:{sport}:{league}:{day}:{page}"
+                    if window_days != 1 or season is not None:
+                        key = f"v2:{sport}:{league}:{season}:{day}:{window_end}:{page}"
                     async with SessionLocal() as session:
                         checkpoint = await artifact(
                             session,
@@ -211,27 +247,13 @@ async def backfill(sport: str, start: date, end: date, max_pages: int = 100) -> 
                         }
                         await session.commit()
                         try:
-                            await asyncio.sleep(settings.backfill_request_delay_seconds)
                             if football:
-                                path = f"fixtures/between/{day}/{day}"
-                                params = {
-                                    "filters": f"fixtureLeagues:{league}",
-                                    "page": str(page),
-                                    "include": "participants;league;state;scores;statistics.type",
-                                }
-                                try:
-                                    raw_rows = await football._request(path, params)
-                                except PermissionError:
-                                    if football.last_status_code != 403:
-                                        raise
-                                    params["include"] = "participants;league;state;scores"
-                                    raw_rows = await football._request(path, params)
-                                rows = football._records(raw_rows)
-                                has_more = bool(football.last_pagination.get("has_more"))
-                                if any(int(r.get("league_id", -1)) != league for r in rows):
-                                    raise ProviderError("Provider returned unexpected league")
+                                rows, has_more = await football_page(
+                                    football, day, window_end, league, page
+                                )
                             else:
                                 assert tennis is not None
+                                await asyncio.sleep(settings.backfill_request_delay_seconds)
                                 at = datetime.combine(day, datetime.min.time(), tzinfo=UTC)
                                 rows = await tennis.get_matches(at, at)
                                 # API Tennis documents no page cursor. One UTC day is a
@@ -239,7 +261,11 @@ async def backfill(sport: str, start: date, end: date, max_pages: int = 100) -> 
                                 has_more = False
                             rejected = []
                             new = 0
+                            season_filtered = 0
                             for raw in rows:
+                                if season is not None and raw.get("season_id") != season:
+                                    season_filtered += 1
+                                    continue
                                 try:
                                     async with session.begin_nested():
                                         new += int(
@@ -260,6 +286,10 @@ async def backfill(sport: str, start: date, end: date, max_pages: int = 100) -> 
                                 "has_more": has_more,
                                 "records_received": len(rows),
                                 "inserted": new,
+                                "season_filtered": season_filtered,
+                                "requested_season": season,
+                                "window_start": day.isoformat(),
+                                "window_end": window_end.isoformat(),
                                 "rejected_ids": rejected,
                                 "payload_hash": payload_hash(rows),
                                 "http_status": (

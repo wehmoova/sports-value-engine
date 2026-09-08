@@ -7,7 +7,7 @@ from datetime import UTC, date, datetime
 from typing import Any
 from uuid import uuid4
 
-from sqlalchemy import func, select
+from sqlalchemy import func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
@@ -16,6 +16,7 @@ from app.models import Event, ModelPrediction, ModelRegistry, Recommendation, Sp
 from app.models.research import ResearchArtifact
 from app.research.backfill import backfill
 from app.research.context import load_context_snapshots
+from app.research.diagnostics import diagnose
 from app.research.features import build_dataset
 from app.research.markets import attach_market_baseline
 from app.research.store import artifact
@@ -117,8 +118,23 @@ async def status_report(session: AsyncSession) -> dict[str, Any]:
 
 async def execute(args: argparse.Namespace) -> dict[str, Any]:
     if args.command == "backfill":
-        return await backfill(args.sport, args.start, args.end, args.max_pages)
+        return await backfill(
+            args.sport,
+            args.start,
+            args.end,
+            args.max_pages,
+            league=args.league,
+            season=args.season,
+            window_days=args.window_days,
+            dry_run=args.dry_run,
+        )
     async with SessionLocal() as session:
+        if args.command == "diagnose":
+            if engine.dialect.name == "postgresql":
+                await session.execute(
+                    text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+                )
+            return await diagnose(session, args.sport)
         if args.command == "status":
             return await status_report(session)
         if args.command == "features":
@@ -239,9 +255,18 @@ def parser() -> argparse.ArgumentParser:
     sub = cli.add_subparsers(dest="command", required=True)
     historical = sub.add_parser("backfill")
     historical.add_argument("--sport", choices=("football", "tennis"), required=True)
-    historical.add_argument("--start", type=date.fromisoformat, required=True)
-    historical.add_argument("--end", type=date.fromisoformat, required=True)
+    historical.add_argument("--start", "--from", type=date.fromisoformat, required=True)
+    historical.add_argument("--end", "--to", type=date.fromisoformat, required=True)
     historical.add_argument("--max-pages", type=int, default=100)
+    historical.add_argument("--league", type=int)
+    historical.add_argument("--season", type=int)
+    historical.add_argument("--window-days", type=int, default=1)
+    historical.add_argument("--dry-run", action="store_true")
+    historical.add_argument(
+        "--resume",
+        action="store_true",
+        help="Resume is always enabled; completed pages are skipped",
+    )
     features = sub.add_parser("features")
     features.add_argument(
         "--sport", choices=("football", "tennis_atp", "tennis_wta"), required=True
@@ -254,13 +279,17 @@ def parser() -> argparse.ArgumentParser:
     promote = sub.add_parser("promote")
     promote.add_argument("--validation", required=True)
     sub.add_parser("status")
+    diagnostic = sub.add_parser("diagnose")
+    diagnostic.add_argument(
+        "--sport", choices=("football", "tennis_atp", "tennis_wta"), required=True
+    )
     return cli
 
 
 async def main() -> int:
     args = parser().parse_args()
     try:
-        if args.command in {"backfill", "status"}:
+        if args.command in {"backfill", "status", "diagnose"}:
             result = await execute(args)
         else:
             async with job_lock("research-write") as acquired:
