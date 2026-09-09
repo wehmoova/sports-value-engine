@@ -141,7 +141,7 @@ async def test_dry_run_never_opens_database_or_lock(monkeypatch):
     )
     assert Provider.calls == ["1", "2"]
     assert result["database_writes"] == 0 and result["complete"]
-    assert result["new_immediate_point_in_time_samples"] == 0
+    assert result["new_immediate_point_in_time_samples"] is None
     with pytest.raises(ValueError, match="not accessible"):
         await module.backfill(
             "football", date(2020, 1, 1), date(2020, 1, 7), league=999, dry_run=True

@@ -88,7 +88,7 @@ def _tennis_record(row: TennisStatistic) -> dict[str, Any]:
 
 
 async def load_context_snapshots(
-    session: AsyncSession, sport: str, event_ids: list[str]
+    session: AsyncSession, sport: str, event_ids: list[str], *, football_scope: bool = False
 ) -> list[dict[str, Any]]:
     """Return exact-event snapshots; feature code applies the strict time cutoff."""
     if sport not in {"football", "tennis_atp", "tennis_wta"}:
@@ -128,7 +128,14 @@ async def load_context_snapshots(
                     )
                 )
             )
-            records.extend(_football_record(row) for row in football_rows if _provenance_ok(row))
+            for row in football_rows:
+                if _provenance_ok(row):
+                    record = _football_record(row)
+                    if football_scope:
+                        record.update(
+                            league=row.payload.get("league_id"), season=row.payload.get("season")
+                        )
+                    records.append(record)
         else:
             tennis_rows = list(
                 await session.scalars(

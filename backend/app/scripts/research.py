@@ -18,7 +18,8 @@ from app.research.backfill import backfill
 from app.research.context import load_context_snapshots
 from app.research.diagnostics import diagnose
 from app.research.features import build_dataset
-from app.research.football_reconstruction import build_dataset as build_football_dataset
+from app.research.football_audit_v2 import audit
+from app.research.football_reconstruction_v2 import build_dataset as build_football_dataset
 from app.research.markets import attach_market_baseline
 from app.research.store import artifact
 from app.research.validation import promotion_checks, train_baseline, validate
@@ -130,6 +131,27 @@ async def execute(args: argparse.Namespace) -> dict[str, Any]:
             dry_run=args.dry_run,
         )
     async with SessionLocal() as session:
+        if args.command == "audit":
+            if engine.dialect.name == "postgresql":
+                await session.execute(
+                    text("SET TRANSACTION ISOLATION LEVEL REPEATABLE READ, READ ONLY")
+                )
+            dataset = await required(session, args.dataset, "dataset")
+            histories = list(
+                await session.scalars(
+                    select(ResearchArtifact).where(
+                        ResearchArtifact.kind == "history", ResearchArtifact.sport == "football"
+                    )
+                )
+            )
+            records = [dict(h.payload, artifact_id=h.id, sport=h.sport) for h in histories]
+            contexts = await load_context_snapshots(
+                session,
+                "football",
+                [r["event_id"] for r in dataset.payload["samples"]],
+                football_scope=True,
+            )
+            return {"dataset_id": dataset.id, **audit(dataset.payload, records, contexts)}
         if args.command == "diagnose":
             if engine.dialect.name == "postgresql":
                 await session.execute(
@@ -151,6 +173,7 @@ async def execute(args: argparse.Namespace) -> dict[str, Any]:
                 session,
                 args.sport,
                 [str(h.payload["event_id"]) for h in histories if h.payload.get("event_id")],
+                football_scope=True,
             )
             minimum = (
                 settings.min_football_history_matches
@@ -288,6 +311,8 @@ def parser() -> argparse.ArgumentParser:
     promote = sub.add_parser("promote")
     promote.add_argument("--validation", required=True)
     sub.add_parser("status")
+    audit_parser = sub.add_parser("audit")
+    audit_parser.add_argument("--dataset", required=True)
     diagnostic = sub.add_parser("diagnose")
     diagnostic.add_argument(
         "--sport", choices=("football", "tennis_atp", "tennis_wta"), required=True
@@ -298,7 +323,7 @@ def parser() -> argparse.ArgumentParser:
 async def main() -> int:
     args = parser().parse_args()
     try:
-        if args.command in {"backfill", "status", "diagnose"}:
+        if args.command in {"backfill", "status", "diagnose", "audit"}:
             result = await execute(args)
         else:
             async with job_lock("research-write") as acquired:

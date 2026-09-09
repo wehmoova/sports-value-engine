@@ -107,9 +107,12 @@ def summary(
         "duplicate_provider_ids": duplicates,
         "seasons_observed": sorted(seasons),
         "pre_match_context_proofs": 0,
-        "new_immediate_point_in_time_samples": 0,
+        "new_immediate_point_in_time_samples": None,
         "availability_basis": "FIRST_OBSERVED_FINAL",
-        "note": "Fetched now: eligible as history only for later kickoffs. No backdating.",
+        "note": (
+            "No dataset built. Immutable reconstruction eligibility requires separate diagnosis; "
+            "mutable snapshots are observed now, never backdated."
+        ),
         "xg_available": False,
         "database_writes": 0,
     }

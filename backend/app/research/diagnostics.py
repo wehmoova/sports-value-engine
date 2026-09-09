@@ -19,7 +19,7 @@ from app.models.research import ResearchArtifact
 from app.research.context import _provenance_ok, load_context_snapshots
 from app.research.features import build_dataset, build_sample, eligible_context, eligible_history
 from app.research.features import timestamp as parse_time
-from app.research.football_reconstruction import build_dataset as build_football_dataset
+from app.research.football_reconstruction_v2 import build_dataset as build_football_dataset
 
 
 async def diagnose(session: AsyncSession, sport: str) -> dict[str, Any]:
@@ -32,7 +32,7 @@ async def diagnose(session: AsyncSession, sport: str) -> dict[str, Any]:
     )
     records = [dict(h.payload, artifact_id=h.id, sport=h.sport) for h in histories]
     targets = {r["event_id"]: r for r in sorted(records, key=lambda r: r["available_at"])}
-    context = await load_context_snapshots(session, sport, list(targets))
+    context = await load_context_snapshots(session, sport, list(targets), football_scope=True)
     minimum = (
         settings.min_football_history_matches
         if sport == "football"

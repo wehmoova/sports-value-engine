@@ -19,6 +19,11 @@ The explicitly versioned Football-only [historical reconstruction variant](docs/
 separates immutable final-result event time from strictly observed mutable snapshots.
 It does not change the legacy `strict-observed-v2` or Tennis semantics.
 
+Football research now defaults to [season-isolated reconstruction V2](docs/football-reconstruction-v2.md).
+V1 remains reproducible. V2 isolates short form and Poisson by competition/season,
+retains competition-local long-term Elo, and adds a read-only `research audit --dataset ID`.
+No migration, model training or promotion is included.
+
 1. Optionally copy `.env.example` to `.env` and add `THE_ODDS_API_KEY`.
 2. Run `docker compose up --build` (it also works without `.env`).
 3. Open [http://localhost:3001](http://localhost:3001), [http://localhost:8000/docs](http://localhost:8000/docs), or [http://localhost:8000/health](http://localhost:8000/health).
