@@ -15,6 +15,10 @@ Football point-in-time diagnostics, season-scoped provider statistics and bounde
 dry-run/resumable backfills: [coverage runbook](docs/football-history-coverage.md).
 No xG, training, promotion or availability-gate relaxation is part of this change.
 
+The explicitly versioned Football-only [historical reconstruction variant](docs/football-reconstruction.md)
+separates immutable final-result event time from strictly observed mutable snapshots.
+It does not change the legacy `strict-observed-v2` or Tennis semantics.
+
 1. Optionally copy `.env.example` to `.env` and add `THE_ODDS_API_KEY`.
 2. Run `docker compose up --build` (it also works without `.env`).
 3. Open [http://localhost:3001](http://localhost:3001), [http://localhost:8000/docs](http://localhost:8000/docs), or [http://localhost:8000/health](http://localhost:8000/health).

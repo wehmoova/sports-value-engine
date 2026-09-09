@@ -3,15 +3,23 @@
 from collections import Counter
 from typing import Any
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
-from app.models import FootballStatistic, TennisStatistic
+from app.models import (
+    Event,
+    FootballStatistic,
+    ModelPrediction,
+    ModelRegistry,
+    Recommendation,
+    TennisStatistic,
+)
 from app.models.research import ResearchArtifact
 from app.research.context import _provenance_ok, load_context_snapshots
 from app.research.features import build_dataset, build_sample, eligible_context, eligible_history
 from app.research.features import timestamp as parse_time
+from app.research.football_reconstruction import build_dataset as build_football_dataset
 
 
 async def diagnose(session: AsyncSession, sport: str) -> dict[str, Any]:
@@ -31,6 +39,46 @@ async def diagnose(session: AsyncSession, sport: str) -> dict[str, Any]:
         else settings.min_tennis_history_matches
     )
     participant = settings.min_participant_history_matches
+    if sport == "football":
+        result = build_football_dataset(records, minimum, participant, context)
+        result.pop("samples")
+        active_models = await session.scalar(
+            select(func.count())
+            .select_from(ModelRegistry)
+            .where(ModelRegistry.status == "PRODUCTION", ModelRegistry.is_active.is_(True))
+        )
+        return {
+            "status": "DIAGNOSED",
+            "read_only": True,
+            "sport": sport,
+            "feature_summary": result,
+            "PRODUCTION_MODEL_STATUS": "PRODUCTION" if active_models else "NO_PRODUCTION_MODEL",
+            "PREDICTIONS": await session.scalar(select(func.count()).select_from(ModelPrediction)),
+            "RECOMMENDATIONS": await session.scalar(
+                select(func.count()).select_from(Recommendation)
+            ),
+            "MOCK_RECORDS": {
+                "events": await session.scalar(
+                    select(func.count())
+                    .select_from(Event)
+                    .where(Event.is_demo.is_(True) | (Event.data_origin != "REAL"))
+                ),
+                "predictions": await session.scalar(
+                    select(func.count())
+                    .select_from(ModelPrediction)
+                    .where(
+                        ModelPrediction.is_demo.is_(True) | (ModelPrediction.data_origin != "REAL")
+                    )
+                ),
+                "recommendations": await session.scalar(
+                    select(func.count())
+                    .select_from(Recommendation)
+                    .where(
+                        Recommendation.is_demo.is_(True) | (Recommendation.data_origin != "REAL")
+                    )
+                ),
+            },
+        }
     reasons: list[str] = []
     evidence = []
     for event in targets.values():

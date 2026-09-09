@@ -18,6 +18,7 @@ from app.research.backfill import backfill
 from app.research.context import load_context_snapshots
 from app.research.diagnostics import diagnose
 from app.research.features import build_dataset
+from app.research.football_reconstruction import build_dataset as build_football_dataset
 from app.research.markets import attach_market_baseline
 from app.research.store import artifact
 from app.research.validation import promotion_checks, train_baseline, validate
@@ -156,7 +157,8 @@ async def execute(args: argparse.Namespace) -> dict[str, Any]:
                 if args.sport == "football"
                 else settings.min_tennis_history_matches
             )
-            result = build_dataset(
+            builder = build_football_dataset if args.sport == "football" else build_dataset
+            result = builder(
                 records, minimum, settings.min_participant_history_matches, context_records
             )
             row = await artifact(session, "dataset", args.sport, result, status=result["status"])
@@ -245,7 +247,14 @@ async def execute(args: argparse.Namespace) -> dict[str, Any]:
             "summary": {
                 k: v
                 for k, v in row.payload.items()
-                if k not in {"samples", "out_of_sample", "training_ids", "calibration_ids"}
+                if k
+                not in {
+                    "samples",
+                    "out_of_sample",
+                    "training_ids",
+                    "calibration_ids",
+                    "event_evidence",
+                }
             },
         }
 
